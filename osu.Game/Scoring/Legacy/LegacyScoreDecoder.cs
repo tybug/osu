@@ -8,6 +8,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using Newtonsoft.Json;
+using osu.Framework.Utils;
 using osu.Game.Beatmaps;
 using osu.Game.Beatmaps.Formats;
 using osu.Game.Beatmaps.Legacy;
@@ -268,6 +269,8 @@ namespace osu.Game.Scoring.Legacy
         {
             float lastTime = beatmapOffset;
             ReplayFrame currentFrame = null;
+            LegacyReplayFrame mostRecentPositiveFrame = null;
+            float cumTimeBeforeDeficit = 0;
 
             // the negative time amount that must be "paid back" by positive frames before we start including frames again.
             // When a negative frame occurs in a replay, all future frames are skipped until the sum total of their times
@@ -303,6 +306,7 @@ namespace osu.Game.Scoring.Legacy
                     // ignore these frames as they serve no real purpose (and can even mislead ruleset-specific handlers - see mania)
                     continue;
 
+                var lastFrameHadDeficit = timeDeficit < 0;
                 timeDeficit += diff;
                 timeDeficit = Math.Min(0, timeDeficit);
 
@@ -310,14 +314,42 @@ namespace osu.Game.Scoring.Legacy
                 // Todo: At some point we probably want to rewind and play back the negative-time frames
                 // but for now we'll achieve equal playback to stable by skipping negative frames
                 if (timeDeficit < 0)
+                {
+                    // if we weren't in a deficit before and we are now, then the previous frame was the most recent one before
+                    // a deficit. Calculate its cumulative time by subtracting this frame's time.
+                    if (!lastFrameHadDeficit)
+                    {
+                        cumTimeBeforeDeficit = lastTime - diff;
+                    }
+
                     continue;
+                }
 
-                currentFrame = convertFrame(new LegacyReplayFrame(lastTime,
-                    mouseX,
-                    mouseY,
-                    (ReplayButtonState)Parsing.ParseInt(split[3])), currentFrame);
+                if (timeDeficit == 0 && lastFrameHadDeficit)
+                {
+                    // this frame brought us out of a negative time deficit. Here, stable inserts a special new frame.
 
+                    // safe to access as there must have been a previous frame in order to both have a time deficit
+                    // (at least 1 negative frame) and be brought out of the time deficit (at least 1 positive frame).
+                    string previousFrame = frames[i - 1];
+                    float previousFrameX = Parsing.ParseFloat(previousFrame.Split('|')[1]);
+                    float previousFrameY = Parsing.ParseFloat(previousFrame.Split('|')[2]);
+                    float newX = Interpolation.ValueAt(cumTimeBeforeDeficit, previousFrameX, mouseX, lastTime - diff, lastTime);
+                    float newY = Interpolation.ValueAt(cumTimeBeforeDeficit, previousFrameY, mouseY, lastTime - diff, lastTime);
+
+                    var additionalFrame = new LegacyReplayFrame(cumTimeBeforeDeficit, newX, newY, mostRecentPositiveFrame!.ButtonState);
+                    var additionalFrameConverted = convertFrame(additionalFrame, currentFrame);
+                    replay.Frames.Add(additionalFrameConverted);
+                }
+
+                var legacyFrame = new LegacyReplayFrame(lastTime, mouseX, mouseY, (ReplayButtonState)Parsing.ParseInt(split[3]));
+                currentFrame = convertFrame(legacyFrame, currentFrame);
                 replay.Frames.Add(currentFrame);
+
+                if (diff >= 0)
+                {
+                    mostRecentPositiveFrame = legacyFrame;
+                }
             }
         }
 
